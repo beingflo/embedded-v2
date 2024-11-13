@@ -4,9 +4,6 @@
 #include <Wire.h>
 #include <esp_now.h>
 #include "SparkFun_SCD30_Arduino_Library.h"
-#include "DHT20.h"
-
-DHT20 dht;
 
 SCD30 scd30;
 
@@ -74,7 +71,6 @@ void connectSensor() {
     delay(1000);
   }
   scd30.setTemperatureOffset(1.8);
-  dht.begin();  
 
   delay(1000);
 }
@@ -128,35 +124,26 @@ void setup() {
 
 void loop() {
   uint16_t scd_co2 = 0;
-  float dht_temp = 0.0;
-  float dht_hum = 0.0;
+  float scd_temp = 0.0;
+  float scd_hum = 0.0;
 
   if (scd30.dataAvailable()) {
     scd_co2 = scd30.getCO2();
+    scd_temp = scd30.getTemperature();
+    scd_hum = scd30.getHumidity();
 
     Serial.print("co2:");
     Serial.print(scd_co2);
+    Serial.print(" temp:");
+    Serial.print(scd_temp);
+    Serial.print(" humidity:");
+    Serial.print(scd_hum);
     Serial.println();
+
+    sendData(scd_co2, scd_temp, scd_hum);
   } else {
     Serial.println("SCD30 data not ready");
   }
-
-  int dht_err = dht.read();
-  if (dht_err == DHT20_OK) {
-    dht_temp = dht.getTemperature();
-    dht_hum = dht.getHumidity();
-
-    Serial.print("temp:");
-    Serial.print(dht_temp);
-
-    Serial.print(" humidity:");
-    Serial.print(dht_hum);
-    Serial.println();
-  } else {
-    Serial.printf("DHT read failure: %d\n", dht_err);
-  }
-
-  sendData(scd_co2, dht_temp, dht_hum);
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Wifi disconnected");
