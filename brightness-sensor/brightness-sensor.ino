@@ -4,8 +4,10 @@
 #include <Wire.h>
 #include <esp_now.h>
 #include <BH1750.h>
+#include <Adafruit_BMP280.h>
 
 BH1750 light;
+Adafruit_BMP280 bmp;
 
 RTC_DATA_ATTR int counter = 0;
 
@@ -67,10 +69,24 @@ void connectSensor() {
 
   light.begin(BH1750::ONE_TIME_HIGH_RES_MODE);
 
+  unsigned status = bmp.begin(BMP280_ADDRESS_ALT);
+
+  while (!status) {
+    Serial.println("BMP not connected ...");
+    delay(1000);
+  }
+
+    /* Default settings from datasheet. */
+  bmp.setSampling(Adafruit_BMP280::MODE_FORCED,     /* Operating Mode. */
+                  Adafruit_BMP280::SAMPLING_X8,     /* Temp. oversampling */
+                  Adafruit_BMP280::SAMPLING_X16,    /* Pressure oversampling */
+                  Adafruit_BMP280::FILTER_X16,      /* Filtering. */
+                  Adafruit_BMP280::STANDBY_MS_500); /* Standby time. */
+
   delay(1000);
 }
 
-void sendData(float lux) {
+void sendData(float lux, float temperature, float absolute_pressure, float pressure) {
   if (WiFi.status() != WL_CONNECTED) {
       Serial.print("Wifi not connected\n");
       return;
@@ -89,7 +105,7 @@ void sendData(float lux) {
         https.addHeader("emitter", observatory_emitter.c_str());
         https.addHeader("Content-Type", "application/json");
 
-        String body = "{ \"bucket\": \"brightness-living-room\", \"payload\": { \"lux\": " + String(lux) + " } }";
+        String body = "{ \"bucket\": \"brightness-barometer-living-room\", \"payload\": { \"lux\": " + String(lux) + ", \"temperature\": " + String(temperature) + ", \"absolute_pressure\": " + String(absolute_pressure) + ", \"pressure\": " + String(pressure) + " } }";
 
         int httpCode = https.POST(body);
 
@@ -118,16 +134,28 @@ void setup() {
 }
 
 void loop() {
-  if (light.measurementReady(true)) {
+  if (light.measurementReady(true) && bmp.takeForcedMeasurement()) {
     float lux = light.readLightLevel();
+
+    float temperature = bmp.readTemperature();
+    float abs_pressure = bmp.readPressure();
+    float altitude = 430;
+    // Convert from absolute pressure to sea level pressure
+    float pressure = pow((1 - ((0.0065 * altitude) / (temperature + 273.15 + 0.0065 * altitude))), -5.257) * abs_pressure / 100;
 
     Serial.print("lux:");
     Serial.print(lux);
     Serial.println();
 
-    sendData(lux);
+    Serial.print("temp:");
+    Serial.print(temperature);
+    Serial.print(" pressure:");
+    Serial.print(pressure);
+    Serial.println();
+
+    sendData(lux, temperature, abs_pressure, pressure);
   } else {
-    Serial.printf("BH1750 measurement not ready\n");
+    Serial.printf("BH1750 or BMP280 measurement not ready\n");
   }
 
   if (WiFi.status() != WL_CONNECTED) {
