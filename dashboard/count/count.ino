@@ -1,153 +1,130 @@
 #include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <JPEGDEC.h>
 #include "EPD.h"
 
-// Pre allocated black and white image array
+const char* ssid     = "";
+const char* password = "";
+
+#define IMAGE_URL "https://picsum.photos/792/272?grayscale"
+
 uint8_t ImageBW[27200];
 
-// key definition
-#define HOME_KEY 2      // Connect the home button to digital pin 2
-#define EXIT_KEY 1      // Exit key connected to digital pin 1
-#define PRV_KEY 6       // Previous page key connected to digital pin 6
-#define NEXT_KEY 4      // Next page key connected to digital pin 4
-#define OK_KEY 5        // Confirm key connected to digital pin 5
+JPEGDEC jpeg;
 
-// Initialize each key counter
-int HOME_NUM = 0;
-int EXIT_NUM = 0;
-int PRV_NUM = 0;
-int NEXT_NUM = 0;
-int OK_NUM = 0;
-
-// Storage key count array
-int NUM_btn[5] = {0};
-
-// Key counting and display function
-void count_btn(int NUM[5])
-{
-  char buffer[30];  // Buffer for storing strings
-
-  // EPD (Electronic Paper Display) initialization
-  EPD_GPIOInit();
-  Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
-  Paint_Clear(WHITE);
-
-  // Clear the display screen and initialize it
-  EPD_FastMode1Init();
-  EPD_Display_Clear();
-  EPD_Update();
-  EPD_Clear_R26A6H();
-
-  // Display the count of each button
-  int length = sprintf(buffer, "HOME_KEY_NUM:%d", NUM[0]);
-  buffer[length] = '\0';
-  EPD_ShowString(0, 0 + 0 * 20, buffer, 16, BLACK);
-
-  length = sprintf(buffer, "EXIT_KEY_NUM:%d", NUM[1]);
-  buffer[length] = '\0';
-  EPD_ShowString(0, 0 + 1 * 20, buffer, 16, BLACK);
-
-  length = sprintf(buffer, "PRV_KEY_NUM:%d", NUM[2]);
-  buffer[length] = '\0';
-  EPD_ShowString(0, 0 + 2 * 20, buffer, 16, BLACK);
-
-  length = sprintf(buffer, "NEXT__NUM:%d", NUM[3]);
-  buffer[length] = '\0';
-  EPD_ShowString(0, 0 + 3 * 20, buffer, 16, BLACK);
-
-  length = sprintf(buffer, "OK_NUM:%d", NUM[4]);
-  buffer[length] = '\0';
-  EPD_ShowString(0, 0 + 4 * 20, buffer, 16, BLACK);
-
-  // Update display content and enter deep sleep mode
-  EPD_Display(ImageBW);
-  EPD_PartUpdate();
-  EPD_DeepSleep();
+int jpegDraw(JPEGDRAW* pDraw) {
+    for (int y = 0; y < pDraw->iHeight; y++) {
+        for (int x = 0; x < pDraw->iWidth; x++) {
+            uint16_t pixel = pDraw->pPixels[y * pDraw->iWidth + x];
+            // Grayscale image delivered as RGB565 — use red channel (5-bit, 0–31)
+            uint8_t brightness = (pixel >> 11) & 0x1F;
+            uint16_t color = (brightness >= 16) ? WHITE : BLACK;
+            Paint_SetPixel(pDraw->x + x, pDraw->y + y, color);
+        }
+    }
+    return 1;
 }
 
+void fetchAndDisplay() {
+    WiFiClientSecure client;
+    client.setInsecure(); // skip certificate verification
+
+    HTTPClient http;
+    http.begin(client, IMAGE_URL);
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        Serial.printf("HTTP error: %d\n", httpCode);
+        http.end();
+        return;
+    }
+
+    int contentLength = http.getSize();
+    Serial.printf("Content-Length: %d bytes\n", contentLength);
+
+    WiFiClient* stream = http.getStreamPtr();
+    uint8_t* buf = nullptr;
+    size_t bufLen = 0;
+
+    if (contentLength > 0) {
+        buf = (uint8_t*)malloc(contentLength);
+        if (!buf) {
+            Serial.println("malloc failed");
+            http.end();
+            return;
+        }
+        while (bufLen < (size_t)contentLength) {
+            if (stream->available()) {
+                size_t chunk = stream->readBytes(buf + bufLen, contentLength - bufLen);
+                bufLen += chunk;
+            }
+            delay(1);
+        }
+    } else {
+        // Chunked or unknown length — grow buffer as data arrives
+        const size_t CHUNK = 4096;
+        size_t capacity = CHUNK;
+        buf = (uint8_t*)malloc(capacity);
+        while (http.connected() || stream->available()) {
+            size_t avail = stream->available();
+            if (avail) {
+                if (bufLen + avail > capacity) {
+                    capacity = bufLen + avail + CHUNK;
+                    buf = (uint8_t*)realloc(buf, capacity);
+                    if (!buf) {
+                        http.end();
+                        return;
+                    }
+                }
+                bufLen += stream->readBytes(buf + bufLen, avail);
+            }
+            delay(1);
+        }
+    }
+
+    http.end();
+    Serial.printf("Downloaded %d bytes\n", bufLen);
+
+    if (jpeg.openRAM(buf, bufLen, jpegDraw)) {
+        jpeg.decode(0, 0, 0);
+        jpeg.close();
+    } else {
+        Serial.println("JPEG decode failed");
+    }
+
+    free(buf);
+}
 
 void setup() {
-  Serial.begin(115200);  // Initialize serial communication, baud rate 115200
+    Serial.begin(115200);
 
-  // Set button pins
-  pinMode(7, OUTPUT);    // Set pin 7 as output for power control
-  digitalWrite(7, HIGH); // Set the power to high level and turn on the screen power
+    pinMode(7, OUTPUT);
+    digitalWrite(7, HIGH); // power on display
 
-  pinMode(HOME_KEY, INPUT);  // Set the home button pin as input
-  pinMode(EXIT_KEY, INPUT);  // 
-  pinMode(PRV_KEY, INPUT);   // 
-  pinMode(NEXT_KEY, INPUT);  // 
-  pinMode(OK_KEY, INPUT);    // 
+    EPD_GPIOInit();
+    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+    Paint_Clear(WHITE);
+    EPD_FastMode1Init();
+    EPD_Display_Clear();
+    EPD_Update();
+    EPD_Clear_R26A6H();
+
+    WiFi.begin(ssid, password);
+    Serial.print("Connecting to WiFi");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println(" connected");
+
+    fetchAndDisplay();
+
+    EPD_Display(ImageBW);
+    EPD_PartUpdate();
+    EPD_DeepSleep();
 }
 
-void loop() {
-      int flag = 0; // Mark whether any buttons have been pressed
-
-  // Check if the home button is pressed
-  if (digitalRead(HOME_KEY) == 0)
-  {
-    delay(100); // Anti shake delay
-    if (digitalRead(HOME_KEY) == 1)
-    {
-      Serial.println("HOME_KEY"); 
-      HOME_NUM++; // Increase homepage key count
-      flag = 1; // set mark
-    }
-  }
-  // Check if the exit button has been pressed
-  else if (digitalRead(EXIT_KEY) == 0)
-  {
-    delay(100); // delay
-    if (digitalRead(EXIT_KEY) == 1)
-    {
-      Serial.println("EXIT_KEY"); 
-      EXIT_NUM++; // Increase exit key count
-      flag = 1; 
-    }
-  }
-
-  else if (digitalRead(PRV_KEY) == 0)
-  {
-    delay(100); 
-    if (digitalRead(PRV_KEY) == 1)
-    {
-      Serial.println("PRV_KEY"); 
-      PRV_NUM++; 
-      flag = 1; 
-    }
-  }
-
-  else if (digitalRead(NEXT_KEY) == 0)
-  {
-    delay(100); 
-    if (digitalRead(NEXT_KEY) == 1)
-    {
-      Serial.println("NEXT_KEY"); 
-      NEXT_NUM++; 
-      flag = 1; 
-    }
-  }
-
-  else if (digitalRead(OK_KEY) == 0)
-  {
-    delay(100); 
-    if (digitalRead(OK_KEY) == 1)
-    {
-      Serial.println("OK_KEY"); 
-      OK_NUM++; 
-      flag = 1; 
-    }
-  }
-
-  // If a button is pressed, update the display content
-  if (flag == 1)
-  {
-    NUM_btn[0] = HOME_NUM;
-    NUM_btn[1] = EXIT_NUM;
-    NUM_btn[2] = PRV_NUM;
-    NUM_btn[3] = NEXT_NUM;
-    NUM_btn[4] = OK_NUM;
-
-    count_btn(NUM_btn); // Call function to update display
-    flag = 0; // Reset flag
-  }
-}
+void loop() {}
