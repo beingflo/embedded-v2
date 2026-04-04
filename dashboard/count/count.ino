@@ -15,13 +15,16 @@ uint8_t ImageBW[27200];
 JPEGDEC jpeg;
 
 int jpegDraw(JPEGDRAW* pDraw) {
-    for (int y = 0; y < pDraw->iHeight; y++) {
-        for (int x = 0; x < pDraw->iWidth; x++) {
-            uint16_t pixel = pDraw->pPixels[y * pDraw->iWidth + x];
-            // Grayscale image delivered as RGB565 — use red channel (5-bit, 0–31)
-            uint8_t brightness = (pixel >> 11) & 0x1F;
-            uint16_t color = (brightness >= 16) ? WHITE : BLACK;
-            Paint_SetPixel(pDraw->x + x, pDraw->y + y, color);
+    uint8_t* pixels = (uint8_t*)pDraw->pPixels;
+    int pixelW = pDraw->iWidth * 8;
+    int pixelH = pDraw->iHeight * 8;
+    int originX = pDraw->x * 8;
+    int originY = pDraw->y * 8;
+    for (int y = 0; y < pixelH; y++) {
+        for (int x = 0; x < pixelW; x++) {
+            uint8_t gray = pixels[y * pixelW + x];
+            uint16_t color = (gray >= 128) ? WHITE : BLACK;
+            Paint_SetPixel(originX + x, originY + y, color);
         }
     }
     return 1;
@@ -89,6 +92,7 @@ void fetchAndDisplay() {
     Serial.printf("Downloaded %d bytes\n", bufLen);
 
     if (jpeg.openRAM(buf, bufLen, jpegDraw)) {
+        jpeg.setPixelType(EIGHT_BIT_GRAYSCALE);
         jpeg.decode(0, 0, 0);
         jpeg.close();
     } else {
