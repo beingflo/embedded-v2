@@ -2,37 +2,22 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <JPEGDEC.h>
 #include "EPD.h"
 
 const char* ssid     = "";
 const char* password = "";
 
-#define IMAGE_URL "https://picsum.photos/792/272?grayscale"
+#define IMAGE_URL "https://push.events.marending.dev/api/dashboard"
+#define IMG_W 792
+#define IMG_H 272
+#define IMG_ROW_BYTES ((IMG_W + 7) / 8)  // 99
+#define IMG_SIZE (IMG_ROW_BYTES * IMG_H)  // 26928
 
 uint8_t ImageBW[27200];
 
-JPEGDEC jpeg;
-
-int jpegDraw(JPEGDRAW* pDraw) {
-    uint8_t* pixels = (uint8_t*)pDraw->pPixels;
-    int pixelW = pDraw->iWidth * 8;
-    int pixelH = pDraw->iHeight * 8;
-    int originX = pDraw->x * 8;
-    int originY = pDraw->y * 8;
-    for (int y = 0; y < pixelH; y++) {
-        for (int x = 0; x < pixelW; x++) {
-            uint8_t gray = pixels[y * pixelW + x];
-            uint16_t color = (gray >= 128) ? WHITE : BLACK;
-            Paint_SetPixel(originX + x, originY + y, color);
-        }
-    }
-    return 1;
-}
-
 void fetchAndDisplay() {
     WiFiClientSecure client;
-    client.setInsecure(); // skip certificate verification
+    client.setInsecure();
 
     HTTPClient http;
     http.begin(client, IMAGE_URL);
@@ -48,57 +33,27 @@ void fetchAndDisplay() {
     int contentLength = http.getSize();
     Serial.printf("Content-Length: %d bytes\n", contentLength);
 
-    WiFiClient* stream = http.getStreamPtr();
-    uint8_t* buf = nullptr;
-    size_t bufLen = 0;
-
-    if (contentLength > 0) {
-        buf = (uint8_t*)malloc(contentLength);
-        if (!buf) {
-            Serial.println("malloc failed");
-            http.end();
-            return;
-        }
-        while (bufLen < (size_t)contentLength) {
-            if (stream->available()) {
-                size_t chunk = stream->readBytes(buf + bufLen, contentLength - bufLen);
-                bufLen += chunk;
-            }
-            delay(1);
-        }
-    } else {
-        // Chunked or unknown length — grow buffer as data arrives
-        const size_t CHUNK = 4096;
-        size_t capacity = CHUNK;
-        buf = (uint8_t*)malloc(capacity);
-        while (http.connected() || stream->available()) {
-            size_t avail = stream->available();
-            if (avail) {
-                if (bufLen + avail > capacity) {
-                    capacity = bufLen + avail + CHUNK;
-                    buf = (uint8_t*)realloc(buf, capacity);
-                    if (!buf) {
-                        http.end();
-                        return;
-                    }
-                }
-                bufLen += stream->readBytes(buf + bufLen, avail);
-            }
-            delay(1);
-        }
+    uint8_t* buf = (uint8_t*)malloc(IMG_SIZE);
+    if (!buf) {
+        Serial.println("malloc failed");
+        http.end();
+        return;
     }
 
+    WiFiClient* stream = http.getStreamPtr();
+    size_t bufLen = 0;
+    size_t target = (contentLength > 0) ? contentLength : IMG_SIZE;
+    while (bufLen < target) {
+        if (stream->available()) {
+            size_t chunk = stream->readBytes(buf + bufLen, target - bufLen);
+            bufLen += chunk;
+        }
+        delay(1);
+    }
     http.end();
     Serial.printf("Downloaded %d bytes\n", bufLen);
 
-    if (jpeg.openRAM(buf, bufLen, jpegDraw)) {
-        jpeg.setPixelType(EIGHT_BIT_GRAYSCALE);
-        jpeg.decode(0, 0, 0);
-        jpeg.close();
-    } else {
-        Serial.println("JPEG decode failed");
-    }
-
+    EPD_ShowPicture(0, 0, IMG_W, IMG_H, buf, BLACK);
     free(buf);
 }
 
@@ -106,7 +61,7 @@ void setup() {
     Serial.begin(115200);
 
     pinMode(7, OUTPUT);
-    digitalWrite(7, HIGH); // power on display
+    digitalWrite(7, HIGH);
 
     EPD_GPIOInit();
     Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
