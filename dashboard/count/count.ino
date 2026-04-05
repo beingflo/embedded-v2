@@ -12,9 +12,13 @@ const char* password = "";
 #define IMG_H 272
 #define IMG_ROW_BYTES ((IMG_W + 7) / 8)  // 99
 #define IMG_SIZE (IMG_ROW_BYTES * IMG_H)  // 26928
-#define SLEEP_SECONDS 20
+#define SLEEP_SECONDS 120
 
 uint8_t ImageBW[27200];
+
+// Survives deep sleep — full refresh every N cycles to clear ghosting
+RTC_DATA_ATTR int refreshCount = 0;
+#define FULL_REFRESH_EVERY 20
 
 void fetchAndDisplay() {
     WiFiClientSecure client;
@@ -68,9 +72,13 @@ void setup() {
     Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
     Paint_Clear(WHITE);
     EPD_FastMode1Init();
-    EPD_Display_Clear();
-    EPD_Update();
+
+    if (refreshCount % FULL_REFRESH_EVERY == 0) {
+        EPD_Display_Clear();
+        EPD_Update();
+    }
     EPD_Clear_R26A6H();
+    refreshCount++;
 
     WiFi.begin(ssid, password);
     Serial.print("Connecting to WiFi");
