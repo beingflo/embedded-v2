@@ -12,6 +12,7 @@ const char* password = "";
 #define IMG_H 272
 #define IMG_ROW_BYTES ((IMG_W + 7) / 8)  // 99
 #define IMG_SIZE (IMG_ROW_BYTES * IMG_H)  // 26928
+#define SLEEP_SECONDS 20
 
 uint8_t ImageBW[27200];
 
@@ -84,6 +85,14 @@ void setup() {
     EPD_Display(ImageBW);
     EPD_PartUpdate();
     EPD_DeepSleep();
+
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+
+    Serial.printf("Sleeping for %d seconds...\n", SLEEP_SECONDS);
+    Serial.flush();
+    esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_SECONDS * 1000000ULL);
+    esp_deep_sleep_start();
 }
 
 void loop() {}
