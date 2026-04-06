@@ -68,7 +68,14 @@ uint8_t* fetchImage() {
 void setup() {
     Serial.begin(115200);
 
-    // Start WiFi first, before touching the display
+    pinMode(7, OUTPUT);
+    digitalWrite(7, HIGH);
+    EPD_GPIOInit();
+    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+}
+
+void loop() {
+    // Connect WiFi and fetch image
     WiFi.begin(ssid, password);
     Serial.print("Connecting to WiFi");
     while (WiFi.status() != WL_CONNECTED) {
@@ -77,20 +84,16 @@ void setup() {
     }
     Serial.println(" connected");
 
-    // Fetch image while old image is still on screen
     uint8_t* buf = fetchImage();
 
-    // Now init and refresh display
-    pinMode(7, OUTPUT);
-    digitalWrite(7, HIGH);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
 
-    EPD_GPIOInit();
-    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+    // Clear and display
     Paint_Clear(WHITE);
     EPD_FastMode1Init();
     EPD_Display_Clear();
     EPD_Update();
-    EPD_Clear_R26A6H();
 
     if (buf) {
         EPD_ShowPicture(0, 0, IMG_W, IMG_H, buf, BLACK);
@@ -98,16 +101,9 @@ void setup() {
     }
 
     EPD_Display(ImageBW);
-    EPD_PartUpdate();
-    EPD_DeepSleep();
-
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
+    EPD_FastUpdate();
 
     Serial.printf("Sleeping for %d seconds...\n", sleepSeconds);
     Serial.flush();
-    esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
-    esp_deep_sleep_start();
+    delay((uint32_t)sleepSeconds * 1000UL);
 }
-
-void loop() {}
