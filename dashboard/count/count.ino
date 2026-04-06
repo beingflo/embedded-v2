@@ -17,7 +17,7 @@ const char* password = "";
 uint8_t ImageBW[27200];
 int sleepSeconds = DEFAULT_SLEEP_SECONDS;
 
-void fetchAndDisplay() {
+uint8_t* fetchImage() {
     WiFiClientSecure client;
     client.setInsecure();
 
@@ -31,7 +31,7 @@ void fetchAndDisplay() {
     if (httpCode != HTTP_CODE_OK) {
         Serial.printf("HTTP error: %d\n", httpCode);
         http.end();
-        return;
+        return nullptr;
     }
 
     String refreshHeader = http.header("X-Refresh-Seconds");
@@ -46,7 +46,7 @@ void fetchAndDisplay() {
     if (!buf) {
         Serial.println("malloc failed");
         http.end();
-        return;
+        return nullptr;
     }
 
     WiFiClient* stream = http.getStreamPtr();
@@ -62,25 +62,13 @@ void fetchAndDisplay() {
     http.end();
     Serial.printf("Downloaded %d bytes\n", bufLen);
 
-    EPD_ShowPicture(0, 0, IMG_W, IMG_H, buf, BLACK);
-    free(buf);
+    return buf;
 }
 
 void setup() {
     Serial.begin(115200);
 
-    pinMode(7, OUTPUT);
-    digitalWrite(7, HIGH);
-
-    EPD_GPIOInit();
-    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
-    Paint_Clear(WHITE);
-    EPD_FastMode1Init();
-
-    EPD_Display_Clear();
-    EPD_Update();
-    EPD_Clear_R26A6H();
-
+    // Start WiFi first, before touching the display
     WiFi.begin(ssid, password);
     Serial.print("Connecting to WiFi");
     while (WiFi.status() != WL_CONNECTED) {
@@ -89,7 +77,25 @@ void setup() {
     }
     Serial.println(" connected");
 
-    fetchAndDisplay();
+    // Fetch image while old image is still on screen
+    uint8_t* buf = fetchImage();
+
+    // Now init and refresh display
+    pinMode(7, OUTPUT);
+    digitalWrite(7, HIGH);
+
+    EPD_GPIOInit();
+    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+    Paint_Clear(WHITE);
+    EPD_FastMode1Init();
+    EPD_Display_Clear();
+    EPD_Update();
+    EPD_Clear_R26A6H();
+
+    if (buf) {
+        EPD_ShowPicture(0, 0, IMG_W, IMG_H, buf, BLACK);
+        free(buf);
+    }
 
     EPD_Display(ImageBW);
     EPD_PartUpdate();
