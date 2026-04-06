@@ -12,13 +12,10 @@ const char* password = "";
 #define IMG_H 272
 #define IMG_ROW_BYTES ((IMG_W + 7) / 8)  // 99
 #define IMG_SIZE (IMG_ROW_BYTES * IMG_H)  // 26928
-#define SLEEP_SECONDS 120
+#define DEFAULT_SLEEP_SECONDS 120
 
 uint8_t ImageBW[27200];
-
-// Survives deep sleep — full refresh every N cycles to clear ghosting
-RTC_DATA_ATTR int refreshCount = 0;
-#define FULL_REFRESH_EVERY 20
+int sleepSeconds = DEFAULT_SLEEP_SECONDS;
 
 void fetchAndDisplay() {
     WiFiClientSecure client;
@@ -27,12 +24,19 @@ void fetchAndDisplay() {
     HTTPClient http;
     http.begin(client, IMAGE_URL);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    const char* headerKeys[] = {"X-Refresh-Seconds"};
+    http.collectHeaders(headerKeys, 1);
 
     int httpCode = http.GET();
     if (httpCode != HTTP_CODE_OK) {
         Serial.printf("HTTP error: %d\n", httpCode);
         http.end();
         return;
+    }
+
+    String refreshHeader = http.header("X-Refresh-Seconds");
+    if (refreshHeader.length() > 0) {
+        sleepSeconds = refreshHeader.toInt();
     }
 
     int contentLength = http.getSize();
@@ -73,12 +77,9 @@ void setup() {
     Paint_Clear(WHITE);
     EPD_FastMode1Init();
 
-    if (refreshCount % FULL_REFRESH_EVERY == 0) {
-        EPD_Display_Clear();
-        EPD_Update();
-    }
+    EPD_Display_Clear();
+    EPD_Update();
     EPD_Clear_R26A6H();
-    refreshCount++;
 
     WiFi.begin(ssid, password);
     Serial.print("Connecting to WiFi");
@@ -97,9 +98,9 @@ void setup() {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 
-    Serial.printf("Sleeping for %d seconds...\n", SLEEP_SECONDS);
+    Serial.printf("Sleeping for %d seconds...\n", sleepSeconds);
     Serial.flush();
-    esp_sleep_enable_timer_wakeup((uint64_t)SLEEP_SECONDS * 1000000ULL);
+    esp_sleep_enable_timer_wakeup((uint64_t)sleepSeconds * 1000000ULL);
     esp_deep_sleep_start();
 }
 
