@@ -6,6 +6,7 @@
 
 const char* ssid     = "";
 const char* password = "";
+const char* authToken = "";
 
 #define IMAGE_URL "https://push.events.marending.dev/api/dashboard"
 #define IMG_W 792
@@ -23,6 +24,7 @@ uint8_t* fetchImage() {
 
     HTTPClient http;
     http.begin(client, IMAGE_URL);
+    http.addHeader("Authorization", authToken);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
     const char* headerKeys[] = {"X-Refresh-Seconds"};
     http.collectHeaders(headerKeys, 1);
@@ -52,10 +54,17 @@ uint8_t* fetchImage() {
     WiFiClient* stream = http.getStreamPtr();
     size_t bufLen = 0;
     size_t target = (contentLength > 0) ? contentLength : IMG_SIZE;
+    unsigned long lastDataTime = millis();
     while (bufLen < target) {
         if (stream->available()) {
             size_t chunk = stream->readBytes(buf + bufLen, target - bufLen);
             bufLen += chunk;
+            lastDataTime = millis();
+        } else if (millis() - lastDataTime > 10000) {
+            Serial.println("Download timed out");
+            free(buf);
+            http.end();
+            return nullptr;
         }
         delay(1);
     }
@@ -78,9 +87,18 @@ void loop() {
     // Connect WiFi and fetch image
     WiFi.begin(ssid, password);
     Serial.print("Connecting to WiFi");
-    while (WiFi.status() != WL_CONNECTED) {
+    int wifiAttempts = 0;
+    while (WiFi.status() != WL_CONNECTED && wifiAttempts < 20) {
         delay(500);
         Serial.print(".");
+        wifiAttempts++;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println(" failed, retrying next cycle");
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        delay((uint32_t)sleepSeconds * 1000UL);
+        return;
     }
     Serial.println(" connected");
 
