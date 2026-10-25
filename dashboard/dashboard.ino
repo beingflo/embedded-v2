@@ -1,127 +1,89 @@
+// The epaper dashboard in the living room.
+//
+// The panel is a 792×272 one-bit display on an ESP32-S3. It holds no clock, no
+// fonts and no chart library: once every couple of minutes it pulls one
+// pre-rendered frame from acta (`GET /api/dashboard`, see
+// `acta/service/src/display.rs`), copies it into the paint buffer and goes back
+// to waiting. The picture is the living-room CO2 curve of the last six hours
+// with four scalar readings beside it.
+//
+// Credentials and the endpoint live in ../common/config.h, the fetch path in
+// ../common/acta.h. The credential is the restricted one, so the panel can read
+// the home dashboard and nothing else.
+//
+// The refresh interval comes from the server (`X-Refresh-Seconds`), so it can be
+// changed without opening the panel up to reflash it.
+
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <HTTPClient.h>
+
 #include "EPD.h"
 
-const char* ssid     = "";
-const char* password = "";
-const char* authToken = "";
+#include "../common/acta.h"
 
-#define IMAGE_URL "https://push.events.marending.dev/api/dashboard"
+#if !defined(ACTA_DISPLAY_URL) || !defined(ACTA_HOME_USER) || !defined(ACTA_HOME_PASSWORD)
+#error "common/config.h needs ACTA_DISPLAY_URL, ACTA_HOME_USER and ACTA_HOME_PASSWORD for the panel"
+#endif
+
+// The visible area of the panel. The controller's frame is 800 px wide, but the
+// last 8 px are bezel.
 #define IMG_W 792
 #define IMG_H 272
-#define IMG_ROW_BYTES ((IMG_W + 7) / 8)  // 99
-#define IMG_SIZE (IMG_ROW_BYTES * IMG_H)  // 26928
-#define DEFAULT_SLEEP_SECONDS 120
+#define IMG_SIZE (((IMG_W + 7) / 8) * IMG_H)  // 99 bytes per row, 26928 total
 
-uint8_t ImageBW[27200];
-int sleepSeconds = DEFAULT_SLEEP_SECONDS;
+// Only used until the first response tells us what the server wants.
+#define DEFAULT_REFRESH_SECONDS 120
 
-uint8_t* fetchImage() {
-    WiFiClientSecure client;
-    client.setInsecure();
+// Paint buffer for the panel's controller, and the frame fetched from acta.
+static uint8_t ImageBW[EPD_W * EPD_H / 8];
+static uint8_t Frame[IMG_SIZE];
 
-    HTTPClient http;
-    http.begin(client, IMAGE_URL);
-    http.addHeader("Authorization", authToken);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-    const char* headerKeys[] = {"X-Refresh-Seconds"};
-    http.collectHeaders(headerKeys, 1);
+static long refreshSeconds = DEFAULT_REFRESH_SECONDS;
 
-    int httpCode = http.GET();
-    if (httpCode != HTTP_CODE_OK) {
-        Serial.printf("HTTP error: %d\n", httpCode);
-        http.end();
-        return nullptr;
-    }
-
-    String refreshHeader = http.header("X-Refresh-Seconds");
-    if (refreshHeader.length() > 0) {
-        sleepSeconds = refreshHeader.toInt();
-    }
-
-    int contentLength = http.getSize();
-    Serial.printf("Content-Length: %d bytes\n", contentLength);
-
-    uint8_t* buf = (uint8_t*)malloc(IMG_SIZE);
-    if (!buf) {
-        Serial.println("malloc failed");
-        http.end();
-        return nullptr;
-    }
-
-    WiFiClient* stream = http.getStreamPtr();
-    size_t bufLen = 0;
-    size_t target = (contentLength > 0) ? contentLength : IMG_SIZE;
-    unsigned long lastDataTime = millis();
-    while (bufLen < target) {
-        if (stream->available()) {
-            size_t chunk = stream->readBytes(buf + bufLen, target - bufLen);
-            bufLen += chunk;
-            lastDataTime = millis();
-        } else if (millis() - lastDataTime > 10000) {
-            Serial.println("Download timed out");
-            free(buf);
-            http.end();
-            return nullptr;
-        }
-        delay(1);
-    }
-    http.end();
-    Serial.printf("Downloaded %d bytes\n", bufLen);
-
-    return buf;
-}
-
-void setup() {
-    Serial.begin(115200);
-
-    pinMode(7, OUTPUT);
-    digitalWrite(7, HIGH);
-    EPD_GPIOInit();
-    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
-}
-
-void loop() {
-    // Connect WiFi and fetch image
-    WiFi.begin(ssid, password);
-    Serial.print("Connecting to WiFi");
-    int wifiAttempts = 0;
-    while (WiFi.status() != WL_CONNECTED && wifiAttempts < 20) {
-        delay(500);
-        Serial.print(".");
-        wifiAttempts++;
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println(" failed, retrying next cycle");
-        WiFi.disconnect(true);
-        WiFi.mode(WIFI_OFF);
-        delay((uint32_t)sleepSeconds * 1000UL);
-        return;
-    }
-    Serial.println(" connected");
-
-    uint8_t* buf = fetchImage();
-
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-
-    // Clear and display
+// Push the fetched frame onto the panel. Clearing first and updating twice is
+// what keeps a partial repaint from ghosting the previous picture: the fast
+// update path only flips the pixels it is given, and at ambient temperature it
+// needs the clean pass to settle.
+static void draw() {
     Paint_Clear(WHITE);
     EPD_FastMode1Init();
     EPD_Display_Clear();
     EPD_Update();
 
-    if (buf) {
-        EPD_ShowPicture(0, 0, IMG_W, IMG_H, buf, BLACK);
-        free(buf);
-    }
+    EPD_ShowPicture(0, 0, IMG_W, IMG_H, Frame, BLACK);
 
     EPD_Display(ImageBW);
     EPD_FastUpdate();
+}
 
-    Serial.printf("Sleeping for %d seconds...\n", sleepSeconds);
+void setup() {
+    Serial.begin(921600);
+
+    // Panel power, held high for as long as the board runs.
+    pinMode(7, OUTPUT);
+    digitalWrite(7, HIGH);
+
+    EPD_GPIOInit();
+    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+}
+
+void loop() {
+    const int got = actaFetch(ACTA_DISPLAY_URL, ACTA_HOME_USER, ACTA_HOME_PASSWORD, Frame,
+                              sizeof(Frame), &refreshSeconds);
+
+    // The radio is the largest load on an always-powered board; drop it while
+    // the panel is drawing and idling.
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+
+    if (got == (int)sizeof(Frame)) {
+        draw();
+    } else {
+        // Keep what is on the panel: a failed fetch should not blank the wall.
+        Serial.println("[panel] no new picture, keeping the current one");
+    }
+
+    Serial.printf("[panel] next picture in %ld s\n", refreshSeconds);
     Serial.flush();
-    delay((uint32_t)sleepSeconds * 1000UL);
+    delay((uint32_t)refreshSeconds * 1000UL);
 }

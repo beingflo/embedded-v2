@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Compile a sensor sketch and flash it over USB.
+# Compile a sketch and flash it over USB.
 #
 #   ./flash.sh humidity-sensor
 #   ./flash.sh co2-sensor --check              # compile only, no board attached
@@ -9,6 +9,9 @@
 # The board is not fixed: the sketches run on whatever ESP32 variant is plugged
 # in, so the FQBN is derived from the chip esptool finds on the port (a C6 and a
 # classic ESP32 both build the same source, but only the matching FQBN uploads).
+# A sketch whose board detection cannot tell the module apart carries its own
+# `fqbn` file instead — the panel is an ESP32-S3 with octal PSRAM, which is a
+# board definition rather than something to probe.
 #
 # Credentials come from common/config.h, which is gitignored; this refuses to
 # build without it rather than flashing placeholder values.
@@ -28,7 +31,7 @@ check=0
 [[ -f "$sketch/$sketch.ino" ]] || die "$sketch/$sketch.ino not found"
 command -v arduino-cli >/dev/null || die "arduino-cli not found (brew install arduino-cli)"
 
-# Only the uploading sketches need credentials; the i2c scanner does not.
+# Only the sketches that talk to acta need credentials; the i2c scanner does not.
 if grep -q "common/acta.h" "$sketch/$sketch.ino"; then
     [[ -f common/config.h ]] || die "common/config.h is missing:
   cp common/config.example.h common/config.h   # then fill in the SSID and the acta credential"
@@ -40,6 +43,7 @@ case "$sketch" in
     co2-sensor) libs=("SparkFun SCD30 Arduino Library") ;;
     humidity-sensor) libs=("DHT20") ;;
     brightness-sensor) libs=("BH1750" "Adafruit BMP280 Library") ;;
+    # `dashboard` needs none: its panel driver ships with the sketch.
     *) libs=() ;;
 esac
 
@@ -153,4 +157,8 @@ note "flashing ${sketch} to ${port} (${fqbn})"
 compile arduino-cli compile --fqbn "$fqbn" --upload --port "$port" "$sketch"
 
 note "flashed; watch it with: ./monitor.sh ${port}"
-note "a reading is live once the log shows \"[acta] <source> accepted\""
+if [[ "$sketch" == dashboard ]]; then
+    note "the panel redraws once the log shows \"[acta] picture 26928 bytes\""
+else
+    note "a reading is live once the log shows \"[acta] <source> accepted\""
+fi

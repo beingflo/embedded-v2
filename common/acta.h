@@ -1,16 +1,23 @@
-// Shared upload path for the sensors: WiFi bring-up and one POST per reading to
-// acta's `/api/ingest`.
+// Shared acta path for the sketches: WiFi bring-up, one POST per reading to
+// acta's `/api/ingest`, and one GET for the epaper picture.
 //
 // Header-only on purpose. The Arduino build only compiles sources inside the
 // sketch folder, so anything shared between sketches has to live in a header;
 // every function here is `inline`, so including it from several sketches cannot
 // produce duplicate symbols.
 //
-// The endpoint takes a JSON array of `{source, timestamp?, data}`, where `source`
-// is the series name acta stores and `data` is any JSON object. `timestamp` is
-// deliberately left out: these devices have no clock, so acta stamps arrival
-// time, which for an always-on sensor posting every 30 s is the measurement time
-// to within a second.
+// The ingest endpoint takes a JSON array of `{source, timestamp?, data}`, where
+// `source` is the series name acta stores and `data` is any JSON object.
+// `timestamp` is deliberately left out: these devices have no clock, so acta
+// stamps arrival time, which for an always-on sensor posting every 30 s is the
+// measurement time to within a second.
+//
+// The two directions are guarded separately, each by the config defines it
+// actually reads: a reporting sketch needs `ACTA_URL` and the sensor credential,
+// the panel needs `ACTA_DISPLAY_URL` and the home credential. One `config.h`
+// serves both, but a machine that only holds one credential can still build the
+// sketches that use it — and a sketch that asks for the other one fails at its
+// own call site instead of on an undefined macro somewhere in here.
 #pragma once
 
 #include <HTTPClient.h>
@@ -103,37 +110,43 @@ inline bool connectWifi() {
   return true;
 }
 
-// Host part of ACTA_URL, so a failure can say what actually happened to the name.
-inline String actaHost() {
-  String url = ACTA_URL;
-  const int scheme = url.indexOf("://");
+// Host part of `url`, so a failure can say what actually happened to the name.
+inline String actaHost(const char *url) {
+  String full = url;
+  const int scheme = full.indexOf("://");
   const int start = scheme < 0 ? 0 : scheme + 3;
-  const int slash = url.indexOf('/', start);
-  String host = url.substring(start, slash < 0 ? url.length() : slash);
+  const int slash = full.indexOf('/', start);
+  String host = full.substring(start, slash < 0 ? full.length() : slash);
   const int colon = host.indexOf(':');
   return colon < 0 ? host : host.substring(0, colon);
 }
 
-// Printed once per boot, and again on every failure: "connection refused" from
-// the ESP32 client covers both a refused port and a name that did not resolve,
-// so the address is what turns the message into a diagnosis.
-inline void actaLogTarget() {
-  static bool logged = false;
-  if (logged) {
+// Printed once per boot and per endpoint, and again on every failure:
+// "connection refused" from the ESP32 client covers both a refused port and a
+// name that did not resolve, so the address is what turns the message into a
+// diagnosis.
+inline void actaLogTarget(const char *url) {
+  static const char *logged = nullptr;
+  if (logged != nullptr && strcmp(logged, url) == 0) {
     return;
   }
-  logged = true;
-  Serial.printf("[acta] endpoint %s\n", ACTA_URL);
+  logged = url;
+  Serial.printf("[acta] endpoint %s\n", url);
   Serial.printf("[acta] local %s gw %s dns %s\n", WiFi.localIP().toString().c_str(),
                 WiFi.gatewayIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
 }
+
+// --- reporting -------------------------------------------------------------
+// Only compiled into sketches that have somewhere to post to and a credential to
+// post with; see the guards in config.h's documentation.
+#if defined(ACTA_URL) && defined(ACTA_SENSOR_USER) && defined(ACTA_SENSOR_PASSWORD)
 
 // One attempt: build `[{"source":…,"data":…}]`, POST it, log the outcome.
 inline bool actaPostOnce(const char *source, const String &payload) {
   if (!connectWifi()) {
     return false;
   }
-  actaLogTarget();
+  actaLogTarget(ACTA_URL);
 
   NetworkClientSecure client;
   client.setCACert(ACTA_ROOT_CA);
@@ -170,7 +183,7 @@ inline bool actaPostOnce(const char *source, const String &payload) {
     char tls[128] = {0};
     const int tls_error = client.lastError(tls, sizeof(tls));
     IPAddress ip;
-    const String host = actaHost();
+    const String host = actaHost(ACTA_URL);
     const bool resolved = WiFi.hostByName(host.c_str(), ip);
     Serial.printf("[acta] %s failed: %s (%s), tls=%d %s, time=%ld\n", source,
                   https.errorToString(code).c_str(),
@@ -190,3 +203,102 @@ inline bool actaPost(const char *source, const String &payload) {
   delay(2000);
   return actaPostOnce(source, payload);
 }
+
+#endif  // reporting
+
+// --- displaying ------------------------------------------------------------
+// Only compiled into sketches that have a picture to fetch and a credential to
+// fetch it with.
+#if defined(ACTA_DISPLAY_URL) && defined(ACTA_HOME_USER) && defined(ACTA_HOME_PASSWORD)
+
+// One picture from acta, for the sketch that displays instead of reporting.
+//
+// Reads the body into a caller-owned buffer and returns the byte count, or -1 on
+// any failure. A body that is not exactly `size` bytes is refused rather than
+// drawn: the panel's frame is a fixed 99 bytes times 272 rows, and half a frame
+// would leave the previous picture's remains on the screen.
+//
+// The credential is a restricted one (`ACTA_AUTH_HOME_*` in acta), so a stolen
+// panel only ever gets the home readings, and `*refreshSeconds` comes back from
+// the `X-Refresh-Seconds` header so the interval can be changed without
+// reflashing the device.
+inline int actaFetch(const char *url, const char *user, const char *password, uint8_t *buffer,
+                     size_t size, long *refreshSeconds) {
+  if (!connectWifi()) {
+    return -1;
+  }
+  actaLogTarget(url);
+
+  NetworkClientSecure client;
+  client.setCACert(ACTA_ROOT_CA);
+
+  HTTPClient https;
+  // Longer than a sensor's: the picture is drawn on request, so the service
+  // spends a query and a render before the first byte leaves.
+  https.setTimeout(20000);
+  if (!https.begin(client, url)) {
+    Serial.println("[acta] could not open the connection");
+    return -1;
+  }
+  https.setAuthorization(user, password);
+  const char *headers[] = {"X-Refresh-Seconds"};
+  https.collectHeaders(headers, 1);
+
+  const int code = https.GET();
+  if (code != HTTP_CODE_OK) {
+    if (code > 0) {
+      // A refusal carries the reason in the body: 401 is the credential, 503 is
+      // "no readings yet", and both are worth printing verbatim.
+      Serial.printf("[acta] picture rejected: %d %s\n", code, https.getString().c_str());
+    } else {
+      // Same reasoning as the upload path: the client folds a refused connect
+      // and a failed handshake into one message, so the TLS reason and the
+      // resolved address go out with it.
+      char tls[128] = {0};
+      const int tls_error = client.lastError(tls, sizeof(tls));
+      IPAddress ip;
+      const String host = actaHost(url);
+      const bool resolved = WiFi.hostByName(host.c_str(), ip);
+      Serial.printf("[acta] picture failed: %s (%s), tls=%d %s, time=%ld\n",
+                    https.errorToString(code).c_str(),
+                    resolved ? ip.toString().c_str() : "does not resolve", tls_error, tls,
+                    (long)time(nullptr));
+    }
+    https.end();
+    return -1;
+  }
+
+  const long refresh = https.header("X-Refresh-Seconds").toInt();
+  if (refreshSeconds != nullptr && refresh > 0) {
+    *refreshSeconds = refresh;
+  }
+
+  const int length = https.getSize();
+  if (length != (int)size) {
+    Serial.printf("[acta] picture is %d bytes, panel frame is %u: not drawing it\n", length,
+                  (unsigned)size);
+    https.end();
+    return -1;
+  }
+
+  WiFiClient *stream = https.getStreamPtr();
+  size_t got = 0;
+  unsigned long lastData = millis();
+  while (got < size) {
+    if (stream->available()) {
+      got += stream->readBytes(buffer + got, size - got);
+      lastData = millis();
+    } else if (millis() - lastData > 10000) {
+      Serial.println("[acta] download timed out");
+      https.end();
+      return -1;
+    }
+    delay(1);
+  }
+  https.end();
+
+  Serial.printf("[acta] picture %u bytes\n", (unsigned)got);
+  return (int)got;
+}
+
+#endif  // displaying
