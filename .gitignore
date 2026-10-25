@@ -1,0 +1,5 @@
+# Local configuration: the WiFi network and the acta sensor credential. Never
+# committed; copy the example and fill it in.
+common/config.h
+
+.DS_Store
