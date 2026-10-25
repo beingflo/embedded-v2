@@ -84,11 +84,37 @@ inline bool connectWifi() {
   return true;
 }
 
+// Host part of ACTA_URL, so a failure can say what actually happened to the name.
+inline String actaHost() {
+  String url = ACTA_URL;
+  const int scheme = url.indexOf("://");
+  const int start = scheme < 0 ? 0 : scheme + 3;
+  const int slash = url.indexOf('/', start);
+  String host = url.substring(start, slash < 0 ? url.length() : slash);
+  const int colon = host.indexOf(':');
+  return colon < 0 ? host : host.substring(0, colon);
+}
+
+// Printed once per boot, and again on every failure: "connection refused" from
+// the ESP32 client covers both a refused port and a name that did not resolve,
+// so the address is what turns the message into a diagnosis.
+inline void actaLogTarget() {
+  static bool logged = false;
+  if (logged) {
+    return;
+  }
+  logged = true;
+  Serial.printf("[acta] endpoint %s\n", ACTA_URL);
+  Serial.printf("[acta] local %s gw %s dns %s\n", WiFi.localIP().toString().c_str(),
+                WiFi.gatewayIP().toString().c_str(), WiFi.dnsIP().toString().c_str());
+}
+
 // One attempt: build `[{"source":…,"data":…}]`, POST it, log the outcome.
 inline bool actaPostOnce(const char *source, const String &payload) {
   if (!connectWifi()) {
     return false;
   }
+  actaLogTarget();
 
   NetworkClientSecure client;
   client.setCACert(ACTA_ROOT_CA);
@@ -119,7 +145,15 @@ inline bool actaPostOnce(const char *source, const String &payload) {
   } else if (code > 0) {
     Serial.printf("[acta] %s rejected: %d %s\n", source, code, https.getString().c_str());
   } else {
-    Serial.printf("[acta] %s failed: %s\n", source, https.errorToString(code).c_str());
+    IPAddress ip;
+    const String host = actaHost();
+    if (WiFi.hostByName(host.c_str(), ip)) {
+      Serial.printf("[acta] %s failed: %s (%s -> %s)\n", source, https.errorToString(code).c_str(),
+                    host.c_str(), ip.toString().c_str());
+    } else {
+      Serial.printf("[acta] %s failed: %s (%s does not resolve: DNS)\n", source,
+                    https.errorToString(code).c_str(), host.c_str());
+    }
   }
   https.end();
   return ok;

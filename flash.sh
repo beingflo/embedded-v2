@@ -28,8 +28,11 @@ check=0
 [[ -f "$sketch/$sketch.ino" ]] || die "$sketch/$sketch.ino not found"
 command -v arduino-cli >/dev/null || die "arduino-cli not found (brew install arduino-cli)"
 
-[[ -f common/config.h ]] || die "common/config.h is missing:
+# Only the uploading sketches need credentials; the i2c scanner does not.
+if grep -q "common/acta.h" "$sketch/$sketch.ino"; then
+    [[ -f common/config.h ]] || die "common/config.h is missing:
   cp common/config.example.h common/config.h   # then fill in the SSID and the acta credential"
+fi
 
 # Libraries each sketch pulls in. `arduino-cli lib install` takes the index names,
 # which is what the error message prints when one is missing.
@@ -115,6 +118,12 @@ port="${PORT:-}"
 [[ -n "$port" ]] || port="$(detect_port || true)"
 
 fqbn="${FQBN:-}"
+if [[ -z "$fqbn" && -f "$sketch/fqbn" ]]; then
+    # A board that detection cannot tell apart from a generic dev module: the
+    # wiring lives in the board definition (XIAO C6 swaps SDA/SCL, for example),
+    # so the FQBN is part of the device, recorded next to its sketch.
+    fqbn="$(tr -d '[:space:]' < "$sketch/fqbn")"
+fi
 if [[ -z "$fqbn" && -n "$port" ]]; then
     chip="$(detect_chip "$port" || true)"
     [[ -n "$chip" ]] && fqbn="$(fqbn_for_chip "$chip" || true)"
@@ -124,10 +133,11 @@ if [[ -z "$fqbn" ]]; then
     note "no board on a USB port; building for the generic ${fqbn} (set FQBN=… to pick another)"
 fi
 
-# Boards whose native USB port is what we flash over need `Serial` bound to USB
-# CDC, otherwise the monitor sees nothing: a C6/C3/S3 board reached at
-# /dev/cu.usbmodem* is exactly that case.
-if [[ "$port" == *usbmodem* && ( "$fqbn" =~ :esp32(c3|c5|c6|s3|p4)$ ) ]]; then
+# A board reached over its native USB port needs `Serial` bound to USB CDC,
+# otherwise the monitor sees nothing. Only boards that expose the option get it,
+# and only when no options were given explicitly (three colon-separated fields).
+if [[ "$port" == *usbmodem* && "$fqbn" != *:*:*:* ]] &&
+    arduino-cli board details -b "$fqbn" 2>/dev/null | grep -q "CDCOnBoot="; then
     fqbn="${fqbn}:CDCOnBoot=cdc"
 fi
 
