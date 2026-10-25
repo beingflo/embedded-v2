@@ -14,9 +14,9 @@
 #define WIFI_SSID "…"
 #define WIFI_PASSWORD "…"
 
-// acta's ingest endpoint, and the sensor credential: `ACTA_AUTH_SENSOR_USER` and
-// `ACTA_AUTH_SENSOR_PASSWORD` from the acta deploy secrets. That role may only
-// `POST /api/ingest`, so it can be rotated without touching the dashboard
+// acta's ingest endpoint, and the sensor credential: `ACTA_AUTH_SENSOR_USER`
+// and `ACTA_AUTH_SENSOR_PASSWORD` from the acta deploy secrets. That role may
+// only `POST /api/ingest`, so it can be rotated without touching the dashboard
 // password. The URL is plain `https://` because the certificate is verified
 // against the ISRG root in acta.h.
 #define ACTA_URL "https://acta.marending.dev/api/ingest"
