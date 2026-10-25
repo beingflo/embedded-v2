@@ -11,7 +11,10 @@
 # classic ESP32 both build the same source, but only the matching FQBN uploads).
 # A sketch whose board detection cannot tell the module apart carries its own
 # `fqbn` file instead — the panel is an ESP32-S3 with octal PSRAM, which is a
-# board definition rather than something to probe.
+# board definition rather than something to probe. That file is also where a
+# property of the board's serial bridge belongs: the panel's CP210x drops the
+# stub flasher at the S3's default 921600, so it pins `UploadSpeed=115200`.
+# Override with FQBN=… on the command line to try another speed.
 #
 # Credentials come from common/config.h, which is gitignored; this refuses to
 # build without it rather than flashing placeholder values.
